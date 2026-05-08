@@ -1,0 +1,42 @@
+# Personal/private working folders
+private/
+personal/
+secrets/
+scratch/
+tmp/
+temp/
+data/
+exports/
+downloads/
+uploads/
+captures/
+transcripts/
+
+# Local credentials and machine-specific config
+.env
+.env.*
+!.env.example
+config.yaml
+*.local
+
+# Runtime state and logs
+logs/
+*.log
+.test-tmp/
+
+# Python cache and tooling output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

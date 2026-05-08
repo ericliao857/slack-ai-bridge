@@ -1,0 +1,55 @@
+server:
+  host: "127.0.0.1"
+  port: 8799
+
+slack:
+  signing_secret_env: "SLACK_SIGNING_SECRET"
+  bot_token_env: "SLACK_BOT_TOKEN"
+  conversation_store_path: "logs/conversations.json"
+  # Omit allowed_users or set it to [] to allow all Slack users in allowed channels.
+  allowed_users:
+    - "U0123456789"
+  allowed_channels:
+    - "C0123456789"
+  allowed_commands:
+    "/ask": "codex"
+    "/review": "claude"
+    "/copilot": "copilot"
+  echo_command: "preview"  # none | preview | full
+
+projects:
+  # Reserved broad read-only project. The bridge ignores any path configured
+  # here and uses the system root instead.
+  all: {}
+  default:
+    path: "project-path"
+
+default_project: "default"
+
+# Keep shared configs extensionless. On Windows, the bridge resolves commands
+# by trying .cmd, .exe, and .bat suffixes before reporting command not found.
+tools:
+  codex:
+    command: "codex"
+    # default_model is optional. Omit it to use the CLI's configured/default model.
+    allowed_models: [gpt-5.5, gpt-5.4]
+  claude:
+    command: "claude"
+    allowed_models: [claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5]
+  copilot:
+    command: "copilot"
+    allowed_models: [default]
+
+skills:
+  enabled: false
+
+codex:
+  file_access: "project"  # project | all
+  timeout_seconds: 120
+  output_mode: "preview"  # none | preview | full
+  output_char_limit: 6000
+
+audit:
+  path: "logs/audit.csv"
+  command_log_path: "logs/commands.jsonl"
+  log_commands_jsonl: false
