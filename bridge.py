@@ -37,6 +37,7 @@ READ_ONLY_UNSUPPORTED = (
     "Requests that create, edit, delete, install, patch, commit, push, "
     "or run arbitrary shell commands are not supported."
 )
+OUT_OF_SCOPE_FILE_UNSUPPORTED = "抱歉，我無法協助讀取或討論允許範圍外的檔案。"
 MAX_BODY_BYTES = 64 * 1024
 SLACK_SIGNATURE_TOLERANCE_SECONDS = 60 * 5
 ECHO_COMMAND_PREVIEW_CHARS = 200
@@ -47,6 +48,7 @@ FILE_ACCESS_MODES = frozenset({"project", "all"})
 ALL_PROJECT_NAME = "all"
 SUPPORTED_TOOL_NAMES = frozenset({"codex", "claude", "copilot"})
 WINDOWS_COMMAND_SUFFIXES = (".cmd", ".exe", ".bat")
+SAFETY_PROMPT_TEMPLATE_PATH = Path(__file__).resolve().parent / "prompts" / "safety-rules.md"
 UUID_PATTERN = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -76,6 +78,69 @@ MUTATING_TERMS = [
     r"\boverwrite\b",
     "apply_patch",
 ]
+
+FILE_ACCESS_INTENT_TERMS = [
+    r"\bread\b",
+    r"\blist\b",
+    r"\bopen\b",
+    r"\bshow\b",
+    r"\bcat\b",
+    r"\bsummarize\b",
+    r"\binspect\b",
+    r"\bdiscuss\b",
+    r"\bconfirm\b",
+    r"\bcheck\b",
+    "有什麼",
+    "有甚麼",
+    "有哪些",
+    "什麼文件",
+    "甚麼文件",
+    "哪些文件",
+    "檔案",
+    "文件",
+    "讀取",
+    "列出",
+    "查看",
+    "打開",
+    "摘要",
+    "確認",
+    "討論",
+    "檢查",
+]
+OUT_OF_SCOPE_SCOPE_TERMS = [
+    r"\boutside\s+(?:the\s+)?(?:project|repo|repository|workspace)\b",
+    r"\boutside\s+(?:the\s+)?allowed\s+scope\b",
+    r"\bhome\s+(?:directory|folder)\b",
+    r"\bother\s+(?:location|directory|folder)\b",
+    "專案外",
+    "repo外",
+    "工作區外",
+    "允許範圍外",
+    "其他位置",
+    "別的位置",
+    "home目錄",
+    "home 目錄",
+]
+IMPLICIT_HOME_FOLDER_TERMS = [
+    r"\b(?:user'?s?|my|home)\s*(?:documents|downloads|desktop|pictures|videos|music)\s*(?:folder|directory)?\b",
+    r"(?:使用者|我的|個人|home)\s*(?:documents|downloads|desktop|pictures|videos|music|文件|下載|桌面|圖片|影片|音樂)\s*(?:資料夾|目錄)?",
+]
+PROJECT_SCOPE_TERMS = [
+    r"\b(?:project|repo|repository|workspace)\b",
+    "專案",
+    "repo",
+    "工作區",
+    "程式碼庫",
+]
+PROMPT_PATH_PATTERN = re.compile(
+    r"[A-Za-z]:[\\/][^\s\"'`<>|]+"
+    r"|~(?:[\\/][^\s\"'`<>|]+)?"
+    r"|%[A-Za-z_][A-Za-z0-9_]*%(?:[\\/][^\s\"'`<>|]+)?"
+    r"|\$[A-Za-z_][A-Za-z0-9_]*(?:[\\/][^\s\"'`<>|]+)?"
+    r"|(?<!\S)\.\.(?:[\\/][^\s\"'`<>|]+)?"
+    r"|(?<![:/])/(?!/)[^\s\"'`<>|]+"
+)
+
 
 class ConfigError(ValueError):
     pass
@@ -813,6 +878,56 @@ def is_mutating_prompt(prompt: str) -> bool:
     return any(re.search(term, lowered) for term in MUTATING_TERMS)
 
 
+def has_file_access_intent(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return any(re.search(term, lowered) for term in FILE_ACCESS_INTENT_TERMS)
+
+
+def prompt_path_is_inside_project(path_text: str, project_root: Path) -> bool:
+    token = path_text.strip("`'\"").rstrip(".,;!?)]}。！？、，；）】」』")
+    uses_expandable_root = token.startswith(("~", "$", "%"))
+    expanded = os.path.expandvars(os.path.expanduser(token))
+    if uses_expandable_root and expanded == token:
+        return False
+    if os.name != "nt" and re.match(r"^[A-Za-z]:[\\/]", token):
+        return False
+
+    candidate = Path(expanded)
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+
+    try:
+        project_resolved = project_root.resolve(strict=False)
+        candidate_resolved = candidate.resolve(strict=False)
+        candidate_resolved.relative_to(project_resolved)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
+def has_out_of_scope_file_target(prompt: str, project_root: Path) -> bool:
+    for match in PROMPT_PATH_PATTERN.finditer(prompt):
+        if not prompt_path_is_inside_project(match.group(0), project_root):
+            return True
+
+    lowered = prompt.lower()
+    if any(re.search(term, lowered) for term in OUT_OF_SCOPE_SCOPE_TERMS):
+        return True
+    if any(re.search(term, lowered) for term in IMPLICIT_HOME_FOLDER_TERMS):
+        return not any(re.search(term, lowered) for term in PROJECT_SCOPE_TERMS)
+    return False
+
+
+def is_out_of_scope_file_request(
+    prompt: str,
+    project_root: Path,
+    full_read_access: bool,
+) -> bool:
+    if full_read_access or not has_file_access_intent(prompt):
+        return False
+    return has_out_of_scope_file_target(prompt, project_root)
+
+
 def parse_command_text(text: str, default_project: str, default_model: str) -> ParsedAction:
     stripped = text.strip()
     lowered = stripped.lower()
@@ -1094,9 +1209,22 @@ def clean_slack_event_text(text: str) -> str:
     return re.sub(r"[ \t]+", " ", without_mentions).strip()
 
 
+def load_safety_prompt_template() -> str:
+    return SAFETY_PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8").strip()
+
+
+def compose_cli_prompt(template: str, user_task: str, access_mode: str) -> str:
+    return (
+        template.replace("{{ACCESS_MODE}}", access_mode)
+        .replace("{{USER_TASK}}", user_task.strip())
+        .strip()
+    )
+
+
 class BridgeApp:
     def __init__(self, config: BridgeConfig):
         self.config = config
+        self.safety_prompt_template = load_safety_prompt_template()
         self.audit = AuditLogger(config.audit_path)
         self.commands = CommandLogger(
             config.command_log_path,
@@ -1112,6 +1240,10 @@ class BridgeApp:
 
     def full_read_access_enabled(self, project: ProjectConfig) -> bool:
         return self.config.file_access == "all" or project.name == ALL_PROJECT_NAME
+
+    def cli_prompt(self, project: ProjectConfig, prompt: str) -> str:
+        access_mode = "ALL" if self.full_read_access_enabled(project) else "PROJECT_ONLY"
+        return compose_cli_prompt(self.safety_prompt_template, prompt, access_mode)
 
     def tool_for_command(self, command: str) -> Optional[ToolConfig]:
         tool_name = self.config.command_tools.get(command)
@@ -1297,6 +1429,21 @@ class BridgeApp:
                 "empty_prompt",
             )
             return 200, slack_response("Prompt cannot be empty.")
+
+        if is_out_of_scope_file_request(
+            action.prompt,
+            project.path,
+            self.full_read_access_enabled(project),
+        ):
+            self.audit.log(
+                user_id,
+                channel_id,
+                action.project,
+                action.model,
+                "run",
+                "blocked_outside_scope_file",
+            )
+            return 200, slack_response(OUT_OF_SCOPE_FILE_UNSUPPORTED)
 
         if is_mutating_prompt(action.prompt):
             self.audit.log(
@@ -1501,6 +1648,27 @@ class BridgeApp:
                 action.model,
                 "event",
                 "invalid_model",
+            )
+            return "event_ok" if posted else "event_post_failed"
+
+        if is_out_of_scope_file_request(
+            action.prompt,
+            project.path,
+            self.full_read_access_enabled(project),
+        ):
+            posted = self.post_thread_message(
+                web_client,
+                channel_id,
+                thread_ts,
+                OUT_OF_SCOPE_FILE_UNSUPPORTED,
+            )
+            self.audit.log(
+                user_id,
+                channel_id,
+                action.project,
+                action.model,
+                "event",
+                "blocked_outside_scope_file",
             )
             return "event_ok" if posted else "event_post_failed"
 
@@ -1845,7 +2013,7 @@ class BridgeApp:
                 output="Configured project path does not exist or is not a directory.",
             )
 
-        full_prompt = prompt.strip()
+        full_prompt = self.cli_prompt(project, prompt)
         output_dir = self.config.audit_path.parent / "tmp"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"codex-last-message-{uuid.uuid4().hex}.txt"
@@ -1979,7 +2147,7 @@ class BridgeApp:
             args[1:1] = ["--model", model]
         if session_id:
             args.extend(["--resume", session_id])
-        args.append(prompt.strip())
+        args.append(self.cli_prompt(project, prompt))
         return self.run_plain_cli_tool(
             tool,
             project,
@@ -2010,7 +2178,7 @@ class BridgeApp:
             "--no-ask-user",
             "--no-remote",
             "--prompt",
-            prompt.strip(),
+            self.cli_prompt(project, prompt),
         ]
         if self.full_read_access_enabled(project):
             prompt_index = args.index("--prompt")

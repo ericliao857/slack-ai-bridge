@@ -69,6 +69,23 @@ class BridgeTests(unittest.TestCase):
         except FileNotFoundError:
             pass
 
+    def assert_safety_wrapped_prompt(
+        self,
+        prompt: str,
+        *,
+        task: str = "summarize",
+        access_mode: str = "PROJECT_ONLY",
+    ) -> None:
+        self.assertIn("[Safety Rules - Must Follow]", prompt)
+        self.assertIn(f"Access Mode: {access_mode}", prompt)
+        self.assertIn("Project Root: current CLI working directory = <PROJECT_ROOT>", prompt)
+        self.assertIn("If Access Mode is not ALL", prompt)
+        self.assertIn("抱歉，我無法協助讀取或討論允許範圍外的檔案。", prompt)
+        self.assertIn("Do not mention loaded instructions", prompt)
+        self.assertIn("[User Task]", prompt)
+        self.assertTrue(prompt.rstrip().endswith(task))
+        self.assertNotIn(str(self.project), prompt)
+
     def test_parse_args_defaults_to_socket_mode(self):
         args = bridge.parse_args([])
 
@@ -1056,6 +1073,128 @@ tools:
         self.assertTrue(payload["text"].startswith("This bridge runs local AI tools"))
         self.assertIn("read-only", payload["text"])
 
+    def test_outside_scope_file_prompt_blocked_before_codex(self):
+        outside_path = self.root.parent / "outside.txt"
+        body, headers = self.signed_request(f"read {outside_path}")
+
+        with patch.object(self.app, "run_codex") as run_codex:
+            status, payload = self.app.handle_request(body, headers)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["text"], bridge.OUT_OF_SCOPE_FILE_UNSUPPORTED)
+        run_codex.assert_not_called()
+
+    def test_implicit_user_documents_prompt_blocked_before_codex(self):
+        body, headers = self.signed_request(
+            "使用者Documents資料夾底下有甚麼文件?"
+        )
+
+        with patch.object(self.app, "run_codex") as run_codex:
+            status, payload = self.app.handle_request(body, headers)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["text"], bridge.OUT_OF_SCOPE_FILE_UNSUPPORTED)
+        run_codex.assert_not_called()
+
+    def test_project_scoped_user_docs_prompt_is_allowed(self):
+        body, headers = self.signed_request("專案底下的使用者文件有哪些?")
+
+        with patch.object(
+            self.app,
+            "run_codex",
+            return_value=bridge.CodexRunResult(status="codex_ok", output="ok"),
+        ) as run_codex:
+            status, payload = self.app.handle_request(body, headers)
+
+        self.assertEqual(status, 200)
+        self.assertIn("ok", payload["text"])
+        run_codex.assert_called_once()
+
+    def test_project_scoped_file_query_is_allowed(self):
+        body, headers = self.signed_request("專案底下有甚麼文件?")
+
+        with patch.object(
+            self.app,
+            "run_codex",
+            return_value=bridge.CodexRunResult(status="codex_ok", output="ok"),
+        ) as run_codex:
+            status, payload = self.app.handle_request(body, headers)
+
+        self.assertEqual(status, 200)
+        self.assertIn("ok", payload["text"])
+        run_codex.assert_called_once()
+
+    def test_project_absolute_file_prompt_is_allowed(self):
+        inside_path = self.project / "README.md"
+        body, headers = self.signed_request(f"read {inside_path}")
+
+        with patch.object(
+            self.app,
+            "run_codex",
+            return_value=bridge.CodexRunResult(status="codex_ok", output="ok"),
+        ) as run_codex:
+            status, payload = self.app.handle_request(body, headers)
+
+        self.assertEqual(status, 200)
+        self.assertIn("ok", payload["text"])
+        run_codex.assert_called_once()
+
+    def test_all_file_access_allows_outside_scope_file_prompt(self):
+        app = bridge.BridgeApp(replace(self.config, file_access="all"))
+        outside_path = self.root.parent / "outside.txt"
+        body, headers = self.signed_request(f"read {outside_path}")
+
+        with patch.object(
+            app,
+            "run_codex",
+            return_value=bridge.CodexRunResult(status="codex_ok", output="ok"),
+        ) as run_codex:
+            status, payload = app.handle_request(body, headers)
+
+        self.assertEqual(status, 200)
+        self.assertIn("ok", payload["text"])
+        run_codex.assert_called_once()
+
+    def test_outside_scope_thread_prompt_blocked_before_claude(self):
+        config = self.multi_tool_config()
+        app = bridge.BridgeApp(config)
+        outside_path = self.root.parent / "outside.txt"
+
+        class FakeWebClient:
+            def __init__(self):
+                self.messages = []
+
+            def chat_postMessage(self, **kwargs):
+                self.messages.append(kwargs)
+                return {"ok": True, "ts": "100.2"}
+
+        web_client = FakeWebClient()
+        payload = {
+            "team_id": "T1",
+            "event": {
+                "type": "app_mention",
+                "user": "U1",
+                "channel": "C1",
+                "text": f"<@B1> claude summarize {outside_path}",
+                "ts": "100.1",
+            },
+        }
+
+        with patch.object(
+            app,
+            "run_claude",
+            return_value=bridge.CodexRunResult(status="claude_ok", output="ok"),
+        ) as run_claude:
+            status = app.handle_event(payload, web_client)
+
+        self.assertEqual(status, "event_ok")
+        self.assertEqual(len(web_client.messages), 1)
+        self.assertEqual(
+            web_client.messages[0]["text"],
+            bridge.OUT_OF_SCOPE_FILE_UNSUPPORTED,
+        )
+        run_claude.assert_not_called()
+
     def test_audit_log_written_without_prompt(self):
         body, headers = self.signed_request("help")
         self.app.handle_request(body, headers)
@@ -1201,7 +1340,7 @@ tools:
             self.assertIn("--json", args[args.index("resume") :])
             self.assertNotIn("--ephemeral", args)
             self.assertEqual(args[-2], session_id)
-            self.assertEqual(args[-1], "follow up")
+            self.assert_safety_wrapped_prompt(args[-1], task="follow up")
             output_path = Path(args[args.index("--output-last-message") + 1])
             output_path.write_text("continued answer", encoding="utf-8")
             return subprocess.CompletedProcess(
@@ -1788,13 +1927,10 @@ tools:
         self.assertNotIn("sensitive answer", summary)
         self.assertIn("Output display is disabled by config.", summary)
 
-    def test_run_codex_passes_user_prompt_without_wrapper(self):
+    def test_run_codex_wraps_user_prompt_with_safety_rules(self):
         def fake_run(args, **kwargs):
             prompt = args[-1]
-            self.assertEqual(prompt, "summarize")
-            self.assertNotIn("USER REQUEST", prompt)
-            self.assertNotIn("<task>", prompt)
-            self.assertNotIn("</task>", prompt)
+            self.assert_safety_wrapped_prompt(prompt)
             self.assertNotIn("placeholder", prompt.lower())
             self.assertNotIn("already present", prompt.lower())
             output_path = Path(args[args.index("--output-last-message") + 1])
@@ -1810,16 +1946,16 @@ tools:
 
         self.assertEqual(result.status, "codex_ok")
 
-    def test_run_codex_does_not_add_meta_prompt_terms(self):
+    def test_run_codex_safety_wrapper_keeps_user_task_plain(self):
         def fake_run(args, **kwargs):
             prompt = args[-1]
-            self.assertEqual(prompt, "summarize")
             self.assertNotIn("command text", prompt)
             self.assertNotIn("task body", prompt)
             self.assertNotIn("Slack user request", prompt)
             self.assertNotIn("Slack /codex command", prompt)
             self.assertNotIn("<task>", prompt)
             self.assertNotIn("</task>", prompt)
+            self.assert_safety_wrapped_prompt(prompt)
             output_path = Path(args[args.index("--output-last-message") + 1])
             output_path.write_text("ok", encoding="utf-8")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
@@ -1875,6 +2011,7 @@ tools:
         all_project = bridge.ProjectConfig(name="all", path=self.project)
 
         def fake_run(args, **kwargs):
+            self.assert_safety_wrapped_prompt(args[-1], access_mode="ALL")
             self.assertIn("--ignore-user-config", args)
             self.assertIn("-c", args)
             self.assertIn("sandbox_permissions=[\"disk-full-read-access\"]", args)
@@ -1967,7 +2104,7 @@ tools:
             self.assertNotIn("--allowedTools", args)
             self.assertNotIn("--add-dir", args)
             self.assertNotIn("Edit,Write", args)
-            self.assertEqual(args[-1], "summarize")
+            self.assert_safety_wrapped_prompt(args[-1])
             self.assertEqual(kwargs["cwd"], str(self.project))
             return subprocess.CompletedProcess(args, 0, stdout="answer", stderr="")
 
@@ -2078,7 +2215,7 @@ tools:
 
         def fake_run(args, **kwargs):
             self.assertNotIn("--model", args)
-            self.assertEqual(args[-1], "summarize")
+            self.assert_safety_wrapped_prompt(args[-1])
             return subprocess.CompletedProcess(args, 0, stdout="answer", stderr="")
 
         with patch("bridge.subprocess.run", side_effect=fake_run):
@@ -2143,7 +2280,7 @@ tools:
         def fake_run(args, **kwargs):
             self.assertIn("--resume", args)
             self.assertEqual(args[args.index("--resume") + 1], session_id)
-            self.assertEqual(args[-1], "follow up")
+            self.assert_safety_wrapped_prompt(args[-1], task="follow up")
             return subprocess.CompletedProcess(
                 args,
                 0,
@@ -2197,7 +2334,7 @@ tools:
             self.assertNotIn("--deny-tool=url", args)
             self.assertNotIn("--allow-all-paths", args)
             self.assertNotIn("--add-dir", args)
-            self.assertEqual(args[args.index("--prompt") + 1], "summarize")
+            self.assert_safety_wrapped_prompt(args[args.index("--prompt") + 1])
             self.assertEqual(kwargs["cwd"], str(self.project))
             return subprocess.CompletedProcess(args, 0, stdout="answer", stderr="")
 
@@ -2224,7 +2361,10 @@ tools:
         def fake_run(args, **kwargs):
             self.assertIn("--allow-all-paths", args)
             self.assertIn("--disallow-temp-dir", args)
-            self.assertEqual(args[args.index("--prompt") + 1], "summarize")
+            self.assert_safety_wrapped_prompt(
+                args[args.index("--prompt") + 1],
+                access_mode="ALL",
+            )
             self.assertEqual(kwargs["cwd"], str(self.project))
             return subprocess.CompletedProcess(args, 0, stdout="answer", stderr="")
 
@@ -2249,7 +2389,7 @@ tools:
 
         def fake_run(args, **kwargs):
             self.assertNotIn("--model", args)
-            self.assertEqual(args[args.index("--prompt") + 1], "summarize")
+            self.assert_safety_wrapped_prompt(args[args.index("--prompt") + 1])
             return subprocess.CompletedProcess(args, 0, stdout="answer", stderr="")
 
         with patch("bridge.subprocess.run", side_effect=fake_run):
@@ -2322,7 +2462,10 @@ tools:
         def fake_run(args, **kwargs):
             resume_args = [arg for arg in args if arg.startswith("--resume=")]
             self.assertEqual(resume_args, [f"--resume={session_id}"])
-            self.assertEqual(args[args.index("--prompt") + 1], "follow up")
+            self.assert_safety_wrapped_prompt(
+                args[args.index("--prompt") + 1],
+                task="follow up",
+            )
             stdout = "\n".join(
                 [
                     json.dumps(
