@@ -1,84 +1,86 @@
 # Slack AI Bridge
 
-Slack AI Bridge 是一個跑在本機的 Slack 與 AI CLI 工具橋接器。你可以在 Slack 裡輸入自訂 slash command，例如 `/ask`、`/review`、`/copilot`，或在 Socket Mode 中提及 bot，讓本機的 Codex、Claude、Copilot 讀取允許的專案並回覆結果。
+**Language:** English | [繁體中文](README.zh-TW.md)
 
-這個專案的設計目標是「安全地問問題」。Bridge 會檢查 Slack 使用者、頻道、專案、工具與模型 allowlist，並用 read-only / non-interactive 方式執行本機 AI CLI。建立、修改、刪除、安裝、patch、commit、push 或任意 shell command 類型的請求會在執行前被擋下。
+Slack AI Bridge is a local bridge between Slack and AI CLI tools. You can type custom Slack slash commands such as `/ask`, `/review`, or `/copilot`, or mention a bot in Socket Mode, and let local Codex, Claude, or Copilot read allowed projects and reply with results.
 
-## 功能特色
+The project is designed around one goal: ask questions safely. The bridge checks allowlists for Slack users, channels, projects, tools, and models, then runs local AI CLI tools in read-only and non-interactive mode. Requests to create, modify, delete, install, patch, commit, push, or run arbitrary shell commands are blocked before execution.
 
-- 支援自訂 Slack slash command，例如 `/ask -> codex`、`/review -> claude`。
-- 支援 Slack Socket Mode 與 HTTP Mode，可依部署環境選擇連線方式。
-- 支援 bot mention 與 Slack thread continuation，同一個 thread 可延續同一個本機 CLI session。
-- 支援 Codex、Claude、Copilot 三種本機 CLI 工具。
-- 支援 project allowlist，也支援保留的 `project=all` 寬讀取模式。
-- 支援 private 預設回覆與 `--public` 頻道摘要。
-- 可選擇記錄 audit log 與 command log 到 `logs/`。
+## Features
 
-## 適合用途
+- Supports custom Slack slash commands, such as `/ask -> codex` and `/review -> claude`.
+- Supports both Slack Socket Mode and HTTP Mode, so you can choose the connection style that fits your deployment.
+- Supports bot mentions and Slack thread continuation, so the same Slack thread can continue the same local CLI session.
+- Supports three local AI CLI tools: Codex, Claude, and Copilot.
+- Supports a project allowlist and the reserved broad read mode `project=all`.
+- Supports private default replies and `--public` channel summaries.
+- Can optionally write audit logs and command logs to `logs/`.
 
-- 在 Slack 中快速詢問某個本機 repo 的架構、流程、測試與風險。
-- 讓團隊用受控的方式向本機 AI CLI 提問。
-- 保留 Slack 對話入口，同時把實際讀取範圍限制在明確允許的 project。
+## Good Fits
 
-不適合從 Slack 直接修改程式碼或部署系統；這個 bridge 的核心定位是 read-only 協助。
+- Quickly asking about the architecture, flow, tests, and risks of a local repo from Slack.
+- Letting a team ask controlled questions of local AI CLI tools.
+- Keeping Slack as the conversation entry point while limiting actual file access to explicitly allowed projects.
 
-## 專案結構
+This project is not meant for editing code or deploying systems directly from Slack. The core position of this bridge is read-only assistance.
+
+## Project Structure
 
 ```text
 slack-ai-bridge/
-  bridge.py              # 主程式：Slack 入口、設定讀取、allowlist、CLI 執行、回覆格式
-  config.yaml.example    # 設定範例：Slack、project、tools、audit
-  .env.example           # 環境變數範例：Slack tokens 與 config path
-  requirements.txt       # Python dependency，主要是 slack_sdk
+  bridge.py              # Main program: Slack entrypoints, config loading, allowlists, CLI execution, reply formatting
+  config.yaml.example    # Config example: Slack, projects, tools, audit
+  .env.example           # Environment variable example: Slack tokens and config path
+  requirements.txt       # Python dependencies, mainly slack_sdk
   tests/
-    test_bridge.py       # 單元測試
-  docs/                  # 延伸設計與交接文件
+    test_bridge.py       # Unit tests
+  docs/                  # Extended design and handoff documents
 ```
 
-本機執行後可能會出現 `.env`、`config.yaml`、`logs/`、`__pycache__/` 等檔案；這些通常不應公開，尤其 `.env` 與 `logs/` 可能包含 token、Slack ID、prompt 或對話資訊。
+After running locally, files such as `.env`, `config.yaml`, `logs/`, and `__pycache__/` may appear. These usually should not be published, especially `.env` and `logs/`, because they may contain tokens, Slack IDs, prompts, or conversation data.
 
-## 運作流程
+## Flow
 
 ```mermaid
 flowchart TD
-    user["Slack 使用者"] --> slack["Slack App"]
-    slack --> mode{"連線模式"}
+    user["Slack user"] --> slack["Slack App"]
+    slack --> mode{"Connection mode"}
     mode -->|Socket Mode| socket["Slack WebSocket event"]
     mode -->|HTTP Mode| http["POST /slack/commands"]
-    http --> sig["驗證 Slack signature"]
+    http --> sig["Verify Slack signature"]
     socket --> bridge["bridge.py"]
     sig --> bridge
-    bridge --> allow["檢查 user / channel / project / tool / model"]
-    allow -->|不允許| deny["回覆拒絕原因"]
-    allow -->|允許| parse["解析 project / model / prompt"]
-    parse --> guard{"read-only 請求？"}
-    guard -->|否| block["阻擋寫入或 shell 類請求"]
-    guard -->|是| cli["執行 Codex / Claude / Copilot CLI"]
-    cli --> store["保存 thread session 對應"]
-    cli --> result["整理輸出"]
-    result --> reply["回覆 Slack"]
+    bridge --> allow["Check user / channel / project / tool / model"]
+    allow -->|Denied| deny["Reply with denial reason"]
+    allow -->|Allowed| parse["Parse project / model / prompt"]
+    parse --> guard{"Read-only request?"}
+    guard -->|No| block["Block write or shell-like request"]
+    guard -->|Yes| cli["Run Codex / Claude / Copilot CLI"]
+    cli --> store["Save thread session mapping"]
+    cli --> result["Format output"]
+    result --> reply["Reply to Slack"]
 ```
 
-## Slack 連線模式
+## Slack Connection Modes
 
-| 模式 | Slack 如何連線 | 是否需要公開 endpoint | 適合情境 | 啟動方式 |
+| Mode | How Slack connects | Public endpoint required | Good for | Start command |
 |---|---|---|---|---|
-| Socket Mode | bridge 主動連到 Slack WebSocket，Slack 透過連線推送事件 | 不需要 | 本機開發、私人團隊、不想架 tunnel | `python bridge.py` |
-| HTTP Mode | Slack 直接 POST 到你的 Request URL | 需要公開 HTTPS URL | 已有 server、reverse proxy、ngrok 或 Cloudflare Tunnel | `python bridge.py --http-mode` |
+| Socket Mode | The bridge connects to Slack WebSocket, and Slack pushes events over that connection | No | Local development, private teams, avoiding tunnels | `python bridge.py` |
+| HTTP Mode | Slack sends POST requests directly to your Request URL | Yes, a public HTTPS URL | Existing servers, reverse proxies, ngrok, or Cloudflare Tunnel | `python bridge.py --http-mode` |
 
-建議優先使用 Socket Mode，因為本機不需要暴露公開 HTTP endpoint。若你已經有穩定的公開 HTTPS URL，HTTP Mode 也可以使用。
+Socket Mode is recommended first because local use does not need a public HTTP endpoint. If you already have a stable public HTTPS URL, HTTP Mode is also supported.
 
-## Slack 設定
+## Slack Setup
 
-### 共通設定
+### Shared Setup
 
-1. 建立 Slack App。
-2. 到 `OAuth & Permissions` 加上 `commands` scope。
-3. 到 `Slash Commands` 建立需要的 command，例如 `/ask`、`/review`、`/copilot`。
-4. Install 或 Reinstall app 到 workspace。
-5. 取得 Slack user ID 與 channel ID，填入 `config.yaml` 的 allowlist。
+1. Create a Slack App.
+2. Add the `commands` scope in `OAuth & Permissions`.
+3. Create the slash commands you need in `Slash Commands`, such as `/ask`, `/review`, and `/copilot`.
+4. Install or reinstall the app to your workspace.
+5. Get the Slack user IDs and channel IDs, then add them to the allowlist in `config.yaml`.
 
-Slash command 名稱必須與 `config.yaml` 的 `slack.allowed_commands` 對得上。建議使用 map 格式，明確指定 command 要呼叫哪個工具：
+Slash command names must match `slack.allowed_commands` in `config.yaml`. The recommended map format explicitly assigns each command to a tool:
 
 ```yaml
 slack:
@@ -90,23 +92,23 @@ slack:
 
 ### Socket Mode
 
-Socket Mode 適合本機使用。Slack 會透過 WebSocket 傳送 slash command、app mention 與 thread message event。
+Socket Mode is a good fit for local use. Slack sends slash commands, app mentions, and thread message events through WebSocket.
 
-1. 到 `Settings > Socket Mode` 啟用 Socket Mode。
-2. 到 `Basic Information > App-Level Tokens` 建立 App-Level Token：
-   - Scope：`connections:write`
-   - Token 格式通常是 `xapp-...`
-   - 填入 `.env` 的 `SLACK_APP_TOKEN`
-3. 若要使用 bot mention 與 thread continuation，到 `OAuth & Permissions` 加上：
+1. Enable Socket Mode in `Settings > Socket Mode`.
+2. Create an App-Level Token in `Basic Information > App-Level Tokens`:
+   - Scope: `connections:write`
+   - Token format is usually `xapp-...`
+   - Put it in `.env` as `SLACK_APP_TOKEN`
+3. To use bot mentions and thread continuation, add these scopes in `OAuth & Permissions`:
    - `chat:write`
    - `app_mentions:read`
-   - `channels:history`，用於 public channel thread
-   - `groups:history`，用於 private channel thread
-4. 到 `Event Subscriptions` 啟用事件並訂閱：
+   - `channels:history`, for public channel threads
+   - `groups:history`, for private channel threads
+4. Enable event subscriptions in `Event Subscriptions` and subscribe to:
    - `app_mention`
-   - `message.channels` 或 `message.groups`
-5. 把 bot 邀進允許使用的 Slack channel。
-6. 啟動 bridge：
+   - `message.channels` or `message.groups`
+5. Invite the bot to the Slack channels where it is allowed.
+6. Start the bridge:
 
 ```bash
 python bridge.py
@@ -114,28 +116,28 @@ python bridge.py
 
 ### HTTP Mode
 
-HTTP Mode 適合你已有公開 HTTPS endpoint 或 tunnel 的情境。Slack 會把 slash command payload POST 到 bridge。
+HTTP Mode is useful when you already have a public HTTPS endpoint or tunnel. Slack posts slash command payloads to the bridge.
 
-1. 到 `Slash Commands` 設定 command 的 Request URL：
+1. Set the command Request URL in `Slash Commands`:
 
 ```text
 https://<your-public-host>/slack/commands
 ```
 
-2. 到 `Basic Information` 複製 Signing Secret，填入 `.env` 的 `SLACK_SIGNING_SECRET`。
-3. 啟動 bridge：
+2. Copy the Signing Secret from `Basic Information` and put it in `.env` as `SLACK_SIGNING_SECRET`.
+3. Start the bridge:
 
 ```bash
 python bridge.py --http-mode
 ```
 
-HTTP Mode 本機服務預設 listen 在 `127.0.0.1:8799`。如果你使用 tunnel，請把公開 HTTPS URL 指到本機的 `http://127.0.0.1:8799/slack/commands`。
+In HTTP Mode, the local service listens on `127.0.0.1:8799` by default. If you use a tunnel, point the public HTTPS URL to `http://127.0.0.1:8799/slack/commands`.
 
-## Python 設定
+## Python Setup
 
-需要 Python 3.10+。
+Requires Python 3.10+.
 
-Windows：
+Windows:
 
 ```bash
 python -m pip install -r requirements.txt
@@ -143,7 +145,7 @@ copy .env.example .env
 copy config.yaml.example config.yaml
 ```
 
-macOS / Linux：
+macOS / Linux:
 
 ```bash
 python -m pip install -r requirements.txt
@@ -151,7 +153,7 @@ cp .env.example .env
 cp config.yaml.example config.yaml
 ```
 
-## `.env` 參數
+## `.env` Variables
 
 ```text
 SLACK_SIGNING_SECRET=...
@@ -160,16 +162,16 @@ SLACK_BOT_TOKEN=...
 BRIDGE_CONFIG=config.yaml
 ```
 
-| 參數 | 用途 | 何時需要 |
+| Variable | Purpose | Required when |
 |---|---|---|
-| `SLACK_SIGNING_SECRET` | Slack request signing secret。HTTP Mode 會用它驗證 Slack POST request；目前 bridge 載入設定時也會檢查它存在。 | 必填 |
-| `SLACK_APP_TOKEN` | Slack App-Level Token，格式通常是 `xapp-...`，需要 `connections:write` scope。 | Socket Mode 必填 |
-| `SLACK_BOT_TOKEN` | Slack Bot Token，格式通常是 `xoxb-...`，用來呼叫 `chat.postMessage` 回覆 bot mention 與 thread。 | bot mention / thread continuation 必填 |
-| `BRIDGE_CONFIG` | 指定設定檔路徑。 | 可選，預設是專案根目錄的 `config.yaml` |
+| `SLACK_SIGNING_SECRET` | Slack request signing secret. HTTP Mode uses it to verify Slack POST requests. The current bridge also checks that it exists while loading config. | Required |
+| `SLACK_APP_TOKEN` | Slack App-Level Token, usually in the `xapp-...` format. Requires the `connections:write` scope. | Required for Socket Mode |
+| `SLACK_BOT_TOKEN` | Slack Bot Token, usually in the `xoxb-...` format. Used to call `chat.postMessage` for bot mentions and thread replies. | Required for bot mentions / thread continuation |
+| `BRIDGE_CONFIG` | Path to the config file. | Optional, defaults to `config.yaml` in the project root |
 
-## `config.yaml` 範例
+## `config.yaml` Example
 
-一般 project 的 `path` 必須改成本機絕對路徑。保留 project `all` 可寫成 `all: {}`，不需要也不使用 path。
+For normal projects, `path` must be changed to a local absolute path. The reserved project `all` can be written as `all: {}` and does not need or use a path.
 
 ```yaml
 server:
@@ -223,64 +225,64 @@ audit:
   log_commands_jsonl: false
 ```
 
-## `config.yaml` 參數
+## `config.yaml` Reference
 
-| 區塊 / 參數 | 用途 |
+| Section / key | Purpose |
 |---|---|
-| `server.host` | HTTP Mode 綁定的 host，預設可用 `127.0.0.1`。 |
-| `server.port` | HTTP Mode 綁定的 port，預設可用 `8799`。 |
-| `slack.signing_secret_env` | 指向哪個環境變數保存 Slack Signing Secret，預設是 `SLACK_SIGNING_SECRET`。 |
-| `slack.bot_token_env` | 指向哪個環境變數保存 Slack Bot Token，預設是 `SLACK_BOT_TOKEN`。 |
-| `slack.conversation_store_path` | Slack thread 與本機 CLI session 的對應檔，預設可放在 `logs/conversations.json`。 |
-| `slack.allowed_users` | 允許使用 bridge 的 Slack user ID。省略或設為空陣列 `[]` 代表允許所有使用者；仍會檢查 channel allowlist。 |
-| `slack.allowed_channels` | 允許使用 bridge 的 Slack channel ID allowlist。 |
-| `slack.allowed_commands` | slash command 對工具的對應表，例如 `"/ask": "codex"`。也支援舊的 list 格式，會把 `/codex` 對應到同名 `tools.codex`。 |
-| `slack.echo_command` | 是否在 running 訊息中顯示 prompt：`none`、`preview`、`full`。 |
-| `projects.<name>.path` | 一般 project 的本機絕對路徑，例如 `C:/Users/name/project`。 |
-| `projects.all` | 保留 project；選 `project=all` 時 bridge 會從系統根目錄執行，並使用各 CLI 的 read-only 寬讀取設定。 |
-| `default_project` | Slack 訊息沒有指定 `project=` 時使用的 project。 |
-| `tools.<name>.command` | 本機 AI CLI 指令。支援的 tool 名稱是 `codex`、`claude`、`copilot`。Windows 可不寫副檔名，程式會嘗試 `.cmd`、`.exe`、`.bat`。 |
-| `tools.<name>.default_model` | 該 tool 的預設模型。可省略，省略時使用 CLI 自己的預設模型。 |
-| `tools.<name>.allowed_models` | 允許 Slack 使用者指定的模型清單。 |
-| `skills.enabled` | 預留設定，目前保持 `false`。 |
-| `codex.file_access` | Codex 讀取範圍：`project` 只允許設定的 project；`all` 允許更廣的 read-only 磁碟讀取。`project=all` 也會啟用寬讀取。 |
-| `codex.timeout_seconds` | 本機 CLI 執行逾時秒數。 |
-| `codex.output_mode` | Slack 顯示輸出模式：`none`、`preview`、`full`。 |
-| `codex.output_char_limit` | `preview` 模式最多顯示的字元數。 |
-| `audit.path` | audit CSV 路徑。Audit log 不記錄完整 prompt。 |
-| `audit.command_log_path` | command JSONL log 路徑。 |
-| `audit.log_commands_jsonl` | 是否記錄完整 Slack command text。若 prompt 可能含敏感資訊，建議維持 `false`。 |
+| `server.host` | Host bound by HTTP Mode. `127.0.0.1` is a good default. |
+| `server.port` | Port bound by HTTP Mode. `8799` is a good default. |
+| `slack.signing_secret_env` | Environment variable that stores the Slack Signing Secret. Defaults to `SLACK_SIGNING_SECRET`. |
+| `slack.bot_token_env` | Environment variable that stores the Slack Bot Token. Defaults to `SLACK_BOT_TOKEN`. |
+| `slack.conversation_store_path` | Mapping file for Slack threads and local CLI sessions. Defaults to `logs/conversations.json`. |
+| `slack.allowed_users` | Slack user IDs allowed to use the bridge. If omitted or set to an empty array `[]`, all users are allowed, while the channel allowlist is still checked. |
+| `slack.allowed_channels` | Slack channel ID allowlist for bridge usage. |
+| `slack.allowed_commands` | Mapping from slash commands to tools, such as `"/ask": "codex"`. The old list format is also supported and maps `/codex` to `tools.codex`. |
+| `slack.echo_command` | Whether to show the prompt in the running message: `none`, `preview`, or `full`. |
+| `projects.<name>.path` | Local absolute path for a normal project, such as `C:/Users/name/project`. |
+| `projects.all` | Reserved project. When `project=all` is selected, the bridge runs from the system root and uses each CLI's broad read-only access setting. |
+| `default_project` | Project used when a Slack message does not specify `project=`. |
+| `tools.<name>.command` | Local AI CLI command. Supported tool names are `codex`, `claude`, and `copilot`. On Windows, the file extension can be omitted; the program tries `.cmd`, `.exe`, and `.bat`. |
+| `tools.<name>.default_model` | Default model for the tool. Optional. If omitted, the CLI's own default model is used. |
+| `tools.<name>.allowed_models` | Models that Slack users are allowed to specify. |
+| `skills.enabled` | Reserved setting. Keep it as `false` for now. |
+| `codex.file_access` | Codex read scope. `project` only allows the configured project. `all` allows broader read-only disk access. `project=all` also enables broad read access. |
+| `codex.timeout_seconds` | Timeout in seconds for local CLI execution. |
+| `codex.output_mode` | Slack output display mode: `none`, `preview`, or `full`. |
+| `codex.output_char_limit` | Maximum characters shown in `preview` mode. |
+| `audit.path` | Path to the audit CSV. Audit logs do not record the full prompt. |
+| `audit.command_log_path` | Path to the command JSONL log. |
+| `audit.log_commands_jsonl` | Whether to record the full Slack command text. Keep this `false` if prompts may contain sensitive information. |
 
-## 啟動方式
+## Running
 
-Socket Mode 是預設模式：
+Socket Mode is the default mode:
 
 ```bash
 python bridge.py
 ```
 
-HTTP Mode：
+HTTP Mode:
 
 ```bash
 python bridge.py --http-mode
 ```
 
-指定環境檔與設定檔：
+Specify env and config files:
 
 ```bash
 python bridge.py --env-file .env --config config.yaml
 ```
 
-HTTP Mode 會提供：
+HTTP Mode provides:
 
 ```text
 GET  /health
 POST /slack/commands
 ```
 
-## Slack 使用方法
+## Slack Usage
 
-Slash command：
+Slash commands:
 
 ```text
 /ask help
@@ -292,14 +294,14 @@ Slash command：
 /ask --public summarize this repo for the channel
 ```
 
-如果設定多個工具：
+If multiple tools are configured:
 
 ```text
 /review project=default model=claude-sonnet-4-6 review this module
 /copilot project=default model=default explain the failing test
 ```
 
-Socket Mode bot mention：
+Socket Mode bot mentions:
 
 ```text
 @Bot codex project=default model=gpt-5.5 summarize this repo
@@ -307,27 +309,31 @@ Socket Mode bot mention：
 @Bot copilot project=default model=default explain the failing test
 ```
 
-在同一個 Slack thread 繼續回覆，bridge 會沿用該 thread 保存的本機 CLI session：
+Reply in the same Slack thread to continue. The bridge reuses the local CLI session saved for that thread:
 
 ```text
 What were the main risks you found?
 ```
 
-若要切換工具，請開一個新的 bot mention thread。
+To switch tools, start a new bot mention thread.
 
-## 安全設計與限制
+## Security Design and Limits
 
-- 只有 allowlist 中的 Slack channel 可以使用。
-- `slack.allowed_users` 有填時只允許清單內使用者；省略或空陣列代表允許所有使用者。
-- 一般情況只讀取 `projects` 中明確列出的本機專案。
-- `project=all` 與 `codex.file_access: all` 會擴大 read-only 讀取範圍，請只在你信任的 Slack channel 使用。
-- 只有各 tool `allowed_models` 裡的模型可以被指定。
-- 本機 CLI 以 read-only / non-interactive 方式執行，並停用或限制寫入、shell、遠端與互動能力。
-- 含有寫入意圖的 prompt 會被擋下，例如 create、edit、delete、install、patch、commit、push、shell command。
-- `--public` 只貼出短摘要到頻道；完整結果仍優先回給請求者。
+- Only allowlisted Slack channels can use the bridge.
+- If `slack.allowed_users` is filled in, only listed users are allowed. If it is omitted or empty, all users are allowed.
+- Normal operation only reads local projects explicitly listed under `projects`.
+- `project=all` and `codex.file_access: all` expand the read-only scope, so use them only in Slack channels you trust.
+- Only models listed in each tool's `allowed_models` can be specified.
+- Local CLI tools run in read-only and non-interactive mode, with write, shell, remote, and interactive capabilities disabled or restricted.
+- Prompts with write intent are blocked, such as create, edit, delete, install, patch, commit, push, or shell command requests.
+- `--public` posts only a short summary to the channel. Full results are still preferably returned to the requester.
 
-## 測試
+## Tests
 
 ```bash
 python -m unittest discover -s tests
 ```
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
