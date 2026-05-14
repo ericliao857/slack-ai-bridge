@@ -6,7 +6,7 @@
 
 ## 依據
 
-- 技術研究報告：`.agents/reports/technical-docs/20260514_claude_codex_copilot_cli_file_attachments.md`
+- 公開版技術研究報告：[20260514_claude_codex_copilot_cli_file_attachments.md](20260514_claude_codex_copilot_cli_file_attachments.md)
 - 目前 bridge 行為：
   - `bridge.py` 以 `subprocess.run(..., shell=False)` 呼叫 CLI。
   - Codex 使用 `--json --output-last-message`，Claude 使用 `--print`，Copilot 使用 `--prompt`。
